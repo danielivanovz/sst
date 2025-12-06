@@ -42,8 +42,19 @@ module_path, function_name = handler.rsplit(".", 1)
 module_dir = os.path.dirname(module_path)
 module_name = os.path.basename(module_path)
 
-# Add the directory containing the module to the system path
-sys.path.insert(0, module_dir)
+# Add paths to sys.path to support imports in various project layouts:
+# 1. Current working directory - enables imports relative to the build output root
+# 2. Module directory - enables imports relative to the handler file
+# 3. Parent of module directory - enables package-level imports (e.g., from sibling modules)
+# This fixes issues where packages aren't in the root directory (see: github.com/sst/sst/issues/6050)
+cwd = os.getcwd()
+if cwd not in sys.path:
+    sys.path.insert(0, cwd)
+if module_dir and module_dir not in sys.path:
+    sys.path.insert(0, module_dir)
+    parent_dir = os.path.dirname(module_dir)
+    if parent_dir and parent_dir not in sys.path:
+        sys.path.insert(0, parent_dir)
 
 try:
     # Dynamically load the module from the file path

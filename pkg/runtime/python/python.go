@@ -481,34 +481,43 @@ func (r *PythonRuntime) getPackageName(input *runtime.BuildInput) (string, error
 }
 
 func (r *PythonRuntime) adjustHandlerPath(input *runtime.BuildInput) (string, error) {
-	handlerParts := strings.Split(input.Handler, "/")
-	adjustedHandler := input.Handler
-	if len(handlerParts) >= 3 {
-		// Start from the back, using a sliding window of 3
-		for i := len(handlerParts) - 3; i >= 0; i-- {
-			// Check if we have enough parts left to match the pattern
-			if i+2 >= len(handlerParts) {
-				continue
-			}
+	// Split handler into module path and function name
+	// e.g., "packages/embedding/src/main.handler" -> "packages/embedding/src/main" + "handler"
+	lastDot := strings.LastIndex(input.Handler, ".")
+	if lastDot == -1 {
+		return input.Handler, nil
+	}
 
-			pkgName := handlerParts[i]
-			if handlerParts[i+1] == "src" && handlerParts[i+2] == pkgName {
-				// Found the pattern, now remove the middle two parts (src/{package_name})
-				newParts := append(
-					handlerParts[:i+1],
-					handlerParts[i+3:]...,
-				)
-				adjustedHandler = strings.Join(newParts, "/")
-				slog.Info("adjusted handler path", "original", input.Handler, "adjusted", adjustedHandler)
-				break
-			}
+	modulePath := input.Handler[:lastDot]
+	functionName := input.Handler[lastDot+1:]
+	moduleFile := strings.ReplaceAll(modulePath, "/", string(filepath.Separator)) + ".py"
 
-			// Stop if we would go beyond the project root
-			absPath := filepath.Join(path.ResolveRootDir(input.CfgPath), strings.Join(handlerParts[:i], "/"))
-			if !strings.HasPrefix(absPath, path.ResolveRootDir(input.CfgPath)) {
-				break
-			}
+	// Check if the module exists as-is in the artifact directory
+	fullPath := filepath.Join(input.Out(), moduleFile)
+	if _, err := os.Stat(fullPath); err == nil {
+		slog.Info("handler module found at original path", "path", modulePath)
+		return input.Handler, nil
+	}
+
+	// The module doesn't exist at the original path, so the build must have flattened it.
+	// Try to find where the module actually is by checking progressively shorter paths.
+	parts := strings.Split(modulePath, "/")
+
+	// Start from the end and work backwards, testing each possible module location
+	for i := len(parts) - 1; i >= 0; i-- {
+		testPath := strings.Join(parts[i:], "/")
+		testFile := strings.ReplaceAll(testPath, "/", string(filepath.Separator)) + ".py"
+		fullTestPath := filepath.Join(input.Out(), testFile)
+
+		if _, err := os.Stat(fullTestPath); err == nil {
+			adjustedHandler := testPath + "." + functionName
+			slog.Info("found handler module in artifact", "original", input.Handler, "adjusted", adjustedHandler, "file", fullTestPath)
+			return adjustedHandler, nil
 		}
 	}
-	return adjustedHandler, nil
+
+	// If we still can't find it, return the original handler
+	// The error will be caught at runtime
+	slog.Warn("could not find handler module in artifact, using original path", "handler", input.Handler, "artifact", input.Out())
+	return input.Handler, nil
 }
